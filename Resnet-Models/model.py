@@ -120,7 +120,7 @@ def _variable_with_weight_decay(name, shape, stddev, wd):
 
 
 def distorted_inputs():
-  """Construct distorted input for CIFAR training using the Reader ops.
+  """Construct distorted input for training using the Reader ops.
 
   Returns:
     images: Images. 4D tensor of [batch_size, IMAGE_SIZE, IMAGE_SIZE, 3] size.
@@ -131,13 +131,13 @@ def distorted_inputs():
   """
   if not FLAGS.data_dir:
     raise ValueError('Please supply a data_dir')
-  data_dir = os.path.join(FLAGS.data_dir, 'cifar-10-batches-bin')
-  return cifar10_input.distorted_inputs(data_dir=data_dir,
+  data_dir = os.path.join(FLAGS.data_dir, 'batches-bin') # Add filename
+  return model_input.distorted_inputs(data_dir=data_dir,
                                         batch_size=FLAGS.batch_size)
 
 
 def inputs(eval_data):
-  """Construct input for CIFAR evaluation using the Reader ops.
+  """Construct input for evaluation using the Reader ops.
 
   Args:
     eval_data: bool, indicating if one should use the train or eval data set.
@@ -151,16 +151,70 @@ def inputs(eval_data):
   """
   if not FLAGS.data_dir:
     raise ValueError('Please supply a data_dir')
-  data_dir = os.path.join(FLAGS.data_dir, 'cifar-10-batches-bin')
-  return cifar10_input.inputs(eval_data=eval_data, data_dir=data_dir,
+  data_dir = os.path.join(FLAGS.data_dir, 'batches-bin') # Add filename
+  return model_input.inputs(eval_data=eval_data, data_dir=data_dir,
                               batch_size=FLAGS.batch_size)
 
+def softmax_layer(inpt, shape):
 
-def inference(images):
-  """Build the CIFAR-10 model.
+    fc_w = _variable_on_cpu('softmax_weights', shape,
+                            tf.truncated_normal_initializer(stddev=0.1))
+    fc_b = _variable_on_cpu('softmax_biases', [shape[1]],
+                            tf.zeros_initializer)
+
+    fc_h = tf.nn.softmax(tf.matmul(inpt, fc_w) + fc_b)
+
+    return fc_h
+
+def conv_layer(inpt, filter_shape, stride):
+    out_channels = filter_shape[3]
+
+    filter_ = _variable_on_cpu('filter_weights', filter_shape,
+                            tf.truncated_normal_initializer(stddev=0.1))
+    conv = tf.nn.conv2d(inpt, filter=filter_, strides=[1, stride, stride, 1], padding="SAME")
+    mean, var = tf.nn.moments(conv, axes=[0,1,2])
+
+    beta = _variable_on_cpu('beta', [out_channels],
+                            tf.zeros_initializer)
+    gamma = _variable_on_cpu('gamma', [out_channels],
+                            tf.truncated_normal_initializer(stddev=0.1))
+    
+    batch_norm = tf.nn.batch_norm_with_global_normalization(
+        conv, mean, var, beta, gamma, 0.001,
+        scale_after_normalization=True)
+
+    out = tf.nn.relu(batch_norm)
+
+    return out
+
+def residual_block(inpt, output_depth, down_sample, projection=False):
+    input_depth = inpt.get_shape().as_list()[3]
+    if down_sample:
+        filter_ = [1,2,2,1]
+        inpt = tf.nn.max_pool(inpt, ksize=filter_, strides=filter_, padding='SAME')
+
+    conv1 = conv_layer(inpt, [3, 3, input_depth, output_depth], 1)
+    conv2 = conv_layer(conv1, [3, 3, output_depth, output_depth], 1)
+
+    if input_depth != output_depth:
+        if projection:
+            # Option B: Projection shortcut
+            input_layer = conv_layer(inpt, [1, 1, input_depth, output_depth], 2)
+        else:
+            # Option A: Zero-padding
+            input_layer = tf.pad(inpt, [[0,0], [0,0], [0,0], [0, output_depth - input_depth]])
+    else:
+        input_layer = inpt
+
+    res = conv2 + input_layer
+    return res
+
+def inference(images, n):
+  """Build the model.
 
   Args:
     images: Images returned from distorted_inputs() or inputs().
+    n: Number of layers
 
   Returns:
     Logits.
@@ -170,76 +224,60 @@ def inference(images):
   # If we only ran this model on a single GPU, we could simplify this function
   # by replacing all instances of tf.get_variable() with tf.Variable().
   #
-  # conv1
-  with tf.variable_scope('conv1') as scope:
-    kernel = _variable_with_weight_decay('weights', shape=[5, 5, 3, 64],
-                                         stddev=1e-4, wd=0.0)
-    conv = tf.nn.conv2d(images, kernel, [1, 1, 1, 1], padding='SAME')
-    biases = _variable_on_cpu('biases', [64], tf.constant_initializer(0.0))
-    bias = tf.nn.bias_add(conv, biases)
-    conv1 = tf.nn.relu(bias, name=scope.name)
-    _activation_summary(conv1)
 
-  # pool1
-  pool1 = tf.nn.max_pool(conv1, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1],
-                         padding='SAME', name='pool1')
-  # norm1
-  norm1 = tf.nn.lrn(pool1, 4, bias=1.0, alpha=0.001 / 9.0, beta=0.75,
-                    name='norm1')
+    if n < 20 or (n - 20) % 12 != 0:
+        print "ResNet depth invalid."
+        return
 
-  # conv2
-  with tf.variable_scope('conv2') as scope:
-    kernel = _variable_with_weight_decay('weights', shape=[5, 5, 64, 64],
-                                         stddev=1e-4, wd=0.0)
-    conv = tf.nn.conv2d(norm1, kernel, [1, 1, 1, 1], padding='SAME')
-    biases = _variable_on_cpu('biases', [64], tf.constant_initializer(0.1))
-    bias = tf.nn.bias_add(conv, biases)
-    conv2 = tf.nn.relu(bias, name=scope.name)
-    _activation_summary(conv2)
+    num_conv = (n - 20) / 12 + 1
+    layers = []
 
-  # norm2
-  norm2 = tf.nn.lrn(conv2, 4, bias=1.0, alpha=0.001 / 9.0, beta=0.75,
-                    name='norm2')
-  # pool2
-  pool2 = tf.nn.max_pool(norm2, ksize=[1, 3, 3, 1],
-                         strides=[1, 2, 2, 1], padding='SAME', name='pool2')
+    with tf.variable_scope('conv1'):
+        conv1 = conv_layer(inpt, [3, 3, 3, 16], 1)
+        layers.append(conv1)
+        _activation_summary(conv1) # add to others
 
-  # local3
-  with tf.variable_scope('local3') as scope:
-    # Move everything into depth so we can perform a single matrix multiply.
-    dim = 1
-    for d in pool2.get_shape()[1:].as_list():
-      dim *= d
-    reshape = tf.reshape(pool2, [FLAGS.batch_size, dim])
+    for i in range (num_conv):
+        with tf.variable_scope('conv2_%d' % (i+1)):
+            conv2_x = residual_block(layers[-1], 16, False)
+            conv2 = residual_block(conv2_x, 16, False)
+            layers.append(conv2_x)
+            layers.append(conv2)
 
-    weights = _variable_with_weight_decay('weights', shape=[dim, 384],
-                                          stddev=0.04, wd=0.004)
-    biases = _variable_on_cpu('biases', [384], tf.constant_initializer(0.1))
-    local3 = tf.nn.relu(tf.matmul(reshape, weights) + biases, name=scope.name)
-    _activation_summary(local3)
+        assert conv2.get_shape().as_list()[1:] == [32, 32, 16]
 
-  # local4
-  with tf.variable_scope('local4') as scope:
-    weights = _variable_with_weight_decay('weights', shape=[384, 192],
-                                          stddev=0.04, wd=0.004)
-    biases = _variable_on_cpu('biases', [192], tf.constant_initializer(0.1))
-    local4 = tf.nn.relu(tf.matmul(local3, weights) + biases, name=scope.name)
-    _activation_summary(local4)
+    for i in range (num_conv):
+        down_sample = True if i == 0 else False
+        with tf.variable_scope('conv3_%d' % (i+1)):
+            conv3_x = residual_block(layers[-1], 32, down_sample)
+            conv3 = residual_block(conv3_x, 32, False)
+            layers.append(conv3_x)
+            layers.append(conv3)
 
-  # softmax, i.e. softmax(WX + b)
-  with tf.variable_scope('softmax_linear') as scope:
-    weights = _variable_with_weight_decay('weights', [192, NUM_CLASSES],
-                                          stddev=1/192.0, wd=0.0)
-    biases = _variable_on_cpu('biases', [NUM_CLASSES],
-                              tf.constant_initializer(0.0))
-    softmax_linear = tf.add(tf.matmul(local4, weights), biases, name=scope.name)
-    _activation_summary(softmax_linear)
+        assert conv3.get_shape().as_list()[1:] == [16, 16, 32]
+    
+    for i in range (num_conv):
+        down_sample = True if i == 0 else False
+        with tf.variable_scope('conv4_%d' % (i+1)):
+            conv4_x = residual_block(layers[-1], 64, down_sample)
+            conv4 = residual_block(conv4_x, 64, False)
+            layers.append(conv4_x)
+            layers.append(conv4)
 
-  return softmax_linear
+        assert conv4.get_shape().as_list()[1:] == [8, 8, 64]
+
+    with tf.variable_scope('fc'):
+        global_pool = tf.reduce_mean(layers[-1], [1, 2])
+        assert global_pool.get_shape().as_list()[1:] == [64]
+        
+        out = softmax_layer(global_pool, [64, 10])
+        layers.append(out)
+
+  return layers[-1] #softmax_linear
 
 
 def loss(logits, labels):
-  """Add L2Loss to all the trainable variables.
+  """
 
   Add summary for "Loss" and "Loss/avg".
   Args:
@@ -250,20 +288,17 @@ def loss(logits, labels):
   Returns:
     Loss tensor of type float.
   """
-  # Calculate the average cross entropy loss across the batch.
+  # Calculate the total cross entropy loss across the batch.
   labels = tf.cast(labels, tf.int64)
   cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
       logits, labels, name='cross_entropy_per_example')
-  cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
-  tf.add_to_collection('losses', cross_entropy_mean)
+  cross_entropy_sum = tf.reduce_sum(cross_entropy, name='cross_entropy')
 
-  # The total loss is defined as the cross entropy loss plus all of the weight
-  # decay terms (L2 loss).
-  return tf.add_n(tf.get_collection('losses'), name='total_loss')
+  return cross_entropy_sum
 
 
 def _add_loss_summaries(total_loss):
-  """Add summaries for losses in CIFAR-10 model.
+  """Add summaries for losses in model.
 
   Generates moving average for all losses and associated summaries for
   visualizing the performance of the network.
@@ -290,7 +325,7 @@ def _add_loss_summaries(total_loss):
 
 
 def train(total_loss, global_step):
-  """Train CIFAR-10 model.
+  """Train  model.
 
   Create an optimizer and apply to all trainable variables. Add moving
   average for all trainable variables.
@@ -319,7 +354,7 @@ def train(total_loss, global_step):
 
   # Compute gradients.
   with tf.control_dependencies([loss_averages_op]):
-    opt = tf.train.GradientDescentOptimizer(lr)
+    opt = tf.train.MomentumOptimizer(lr, momentum=0.9)
     grads = opt.compute_gradients(total_loss)
 
   # Apply gradients.
