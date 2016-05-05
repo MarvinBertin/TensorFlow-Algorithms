@@ -2,6 +2,9 @@ from __future__ import print_function
 import tensorflow as tf
 import numpy as np
 
+__author__ = 'MarvinBertin'
+
+"Inspired by Zach Dwiel's HMM implementation"
 
 class HiddenMarkovModel(object):
 
@@ -122,7 +125,7 @@ class HiddenMarkovModel(object):
             self.forward = tf.scatter_update(self.forward, step + 1, forward_prob)
 
         # remove initial probability
-        self.forward = tf.slice(self.forward, [1,0], [5,2]) 
+        #self.forward = tf.slice(self.forward, [1,0], [self.N, self.S]) 
         
 
     def _backward(self, obs_prob_seq):
@@ -145,7 +148,7 @@ class HiddenMarkovModel(object):
             self.backward = tf.scatter_update(self.backward, step - 1, backward_prob)
         
         # remove final probability
-        self.backward = tf.slice(self.backward, [0,0], [5,2])
+        #self.backward = tf.slice(self.backward, [0,0], [self.N, self.S])
 
         
     def forward_backward(self, obs_seq):
@@ -154,18 +157,17 @@ class HiddenMarkovModel(object):
 
         Arguments
         ---------
-        obs_seq : matrix of size N by S, where N is number of timesteps and
+        - obs_seq : matrix of size N by S, where N is number of timesteps and
             S is the number of states
 
         Returns
         -------
-        (posterior, forward, backward)
-        posterior : matrix of size N by S representing
-            the posterior probability of each state at each time step
-        forward : matrix of size N by S representing
+        - forward : matrix of size N by S representing
             the forward probability of each state at each time step
-        backward : matrix of size N by S representing
+        - backward : matrix of size N by S representing
             the backward probability of each state at each time step
+        - posterior : matrix of size N by S representing
+            the posterior probability of each state at each time step
         """
 
         # length of observed sequence
