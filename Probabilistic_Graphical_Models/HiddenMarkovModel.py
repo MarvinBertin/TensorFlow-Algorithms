@@ -241,7 +241,7 @@ class HiddenMarkovModel(object):
             s= prod/ tf.reduce_sum(prod)
             self.gamma = tf.concat(0, [self.gamma, s])
             
-            self.prob_state_1.append(self.gamma[:, 1])
+            self.prob_state_1.append(self.gamma[:, 0])
         
         return T0_new, T_new
     
