@@ -1,0 +1,8 @@
+A similar algorithm is commonly referred to as the Viterbi algorithm, but also known as a special case of the max-product or min-sum algorithm, which solves the related problem of maximization, or most probable explanation. Instead of attempting to solve the marginal, the goal here is to find the values \mathbf{x} that maximises the global function (i.e. most probable values in a probabilistic setting), and it can be defined using the arg max:
+
+\operatorname*{arg\,max}_{\mathbf{x}} g(\mathbf{x}).
+An algorithm that solves this problem is nearly identical to belief propagation, with the sums replaced by maxima in the definitions.[8]
+
+It is worth noting that inference problems like marginalization and maximization are NP-hard to solve exactly and approximately (at least for relative error) in a graphical model. More precisely, the marginalization problem defined above is #P-complete and maximization is NP-complete.
+
+The memory usage of belief propagation can be reduced through the use of the Island algorithm (at a small cost in time complexity).
